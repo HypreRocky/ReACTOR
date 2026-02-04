@@ -4,8 +4,7 @@ from utils.executor_utils import build_agent_registry
 from src.Config import agent_config,github_api_key
 from nodes.router import router_api
 from graph import build_graph
-from Prompt.bank_rewoo_prompt_v3 import planner_prompt
-from Prompt.bank_rewoo_prompt_v2 import bank_rewoo_solver_prompt
+from Prompt.prompt import planner_prompt,solver_prompt
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage,HumanMessage
 from State import ReWOO
@@ -29,7 +28,7 @@ tool_registry = build_agent_registry(agent_config,router_api)
 ctx = Context(
     llm_invoke = llm_invoke,
     planner_prompt=planner_prompt,
-    solver_prompt=bank_rewoo_solver_prompt,
+    solver_prompt=solver_prompt,
     agent_config = agent_config,
     sop_list = sop_list,
     router_api=router_api,
@@ -39,7 +38,7 @@ ctx = Context(
 graph = build_graph(ctx)
 
 raw_input = {
-    "query": "看看我的账户余额，给我推荐个符合我标准的理财呢",
+    "query": "检查下我的账户状态。",
     "history": [],
 }
 
