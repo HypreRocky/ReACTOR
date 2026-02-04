@@ -39,17 +39,8 @@ ctx = Context(
 graph = build_graph(ctx)
 
 raw_input = {
-    'request_id': '',
     "query": "看看我的账户余额，给我推荐个符合我标准的理财呢",
     "history": [],
-    "prev_intent": "",
-    'knowledge_result':'',
-    'customer_no':'',
-    'intent':'',
-    'enable_aigc':True,
-    'is_streaming':False,
-    'hotfix_query':'',
-    'recursion_limit':10
 }
 
 state : ReWOO = {
