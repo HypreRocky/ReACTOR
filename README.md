@@ -11,8 +11,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue" />
   <img src="https://img.shields.io/badge/architecture-ReWOO-orange" />
-  <img src="https://img.shields.io/badge/status-active-success" />
-  <img src="https://img.shields.io/badge/license-MIT-green" />
+  <img src="https://img.shields.io/badge/status-under--construction-yellow" />
+  <img src="https://img.shields.io/badge/license-Apache--2.0-green" />
 </p>
 
 ---
