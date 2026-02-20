@@ -38,11 +38,11 @@
 
 核心组件：
 
-- **Planner**：生成可执行 Plan
-- **Router**：根据 Plan 做调度准备（不做意图判断）
-- **Worker**：执行 Agent 调用（无路由逻辑）
-- **Evaluator / Replanner**：校验结果并在必要时重规划
-- **Solver**：按布局规则统一组装最终输出
+- **Planner**：生成可执行 Plan、支持将复杂意图query拆分、规划串/并行逻辑。
+- **Router**：根据 Plan 进行路由调度。
+- **Worker**：执行 Agent 调用。
+- **Evaluator / Replanner**：校验结果并在必要时重规划。
+- **Solver**：按布局规则统一组装最终输出，支持从外部定义答案编排。
 
 主要入口：
 
