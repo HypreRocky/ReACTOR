@@ -534,17 +534,6 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                 "status": status,
             }
 
-        next_tag = None
-        if idx + 1 < len(steps):
-            next_tag = steps[idx + 1][2]
-        if next_tag == "SerialCallAgent":
-            _append_history_from_payload(
-                working_input,
-                active_query,
-                results[step_var].output,
-                is_streaming=is_streaming,
-            )
-
     elif tool_tag == "FinalOutput":
         final_value = runtime.resolve_tool_input(tool_input, state)
 
