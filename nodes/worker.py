@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from State import StepResult, ReACTOR
 from runtime import AgentRuntime
@@ -15,6 +16,187 @@ def _ensure_trace(state: ReACTOR) -> TraceCollector:
     if isinstance(trace, TraceCollector):
         return trace
     return TraceCollector(event_type="planning")
+
+
+def _parse_call_config(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"agent": raw}
+        except Exception:
+            return {"agent": raw}
+    return {}
+
+
+def _parse_call_list(raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw, list):
+        return [_parse_call_config(item) for item in raw]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return [_parse_call_config(item) for item in parsed]
+        if isinstance(parsed, dict):
+            return [parsed]
+    return []
+
+
+def _build_payload(
+    working_input: Dict[str, Any],
+    cfg: Dict[str, Any],
+    state: ReACTOR,
+    runtime: AgentRuntime,
+    query_fallback: str,
+) -> Any:
+    payload = dict(working_input)
+    query = cfg.get("query") or query_fallback
+    if query:
+        payload["query"] = query
+
+    input_val = cfg.get("input", "$WORKING_INPUT")
+    if isinstance(input_val, str):
+        if input_val == "$WORKING_INPUT":
+            return payload
+        return runtime.resolve_tool_input(input_val, state)
+    return input_val
+
+
+def _append_history_from_payload(
+    working_input: Dict[str, Any],
+    active_query: Optional[str],
+    assistant_payload: Any,
+    *,
+    is_streaming: bool,
+) -> None:
+    if assistant_payload is None:
+        return
+    user_text = active_query or working_input.get("query", "")
+
+    if (
+        is_streaming
+        and isinstance(assistant_payload, dict)
+        and "_stream_raw_events" in assistant_payload
+    ):
+        raw_events = assistant_payload["_stream_raw_events"]
+        non_trace_events = [
+            ev for ev in raw_events
+            if not is_graph_trace_event(ev)
+        ]
+        assistant_text = aggregate_agent_output(non_trace_events)
+        assistant_text = extract_plain_text(assistant_text)[:2000]
+    else:
+        assistant_text = extract_plain_text(assistant_payload)[:2000]
+
+    history = list(working_input.get("history", []))
+    if user_text:
+        history.append({"role": "user", "content": user_text})
+    if assistant_text:
+        history.append({"role": "assistant", "content": assistant_text})
+
+    working_input["history"] = history
+
+
+def _resolve_stream_agent(agent_name: str, runtime: AgentRuntime, is_streaming: bool) -> str:
+    if not is_streaming or not agent_name:
+        return agent_name
+    if agent_name.endswith("_stream"):
+        return agent_name
+    candidate = f"{agent_name}_stream"
+    if candidate in runtime.agent_registry:
+        return candidate
+    return agent_name
+
+
+def _prepare_routing(
+    *,
+    tool_tag: str,
+    tool_input: Any,
+    working_input: Dict[str, Any],
+    state: ReACTOR,
+    runtime: AgentRuntime,
+    trace: TraceCollector,
+    pending_queries: List[str],
+    active_query: Optional[str],
+    is_streaming: bool,
+) -> Dict[str, Any]:
+    if tool_tag == "ParallelCallAgent":
+        call_list = _parse_call_list(tool_input)
+        routes = []
+        for cfg in call_list:
+            agent_name = cfg.get("agent", "")
+            agent_name = _resolve_stream_agent(agent_name, runtime, is_streaming)
+            if not cfg.get("query"):
+                if pending_queries:
+                    cfg = dict(cfg)
+                    cfg["query"] = pending_queries.pop(0)
+                elif active_query:
+                    cfg = dict(cfg)
+                    cfg["query"] = active_query
+                else:
+                    cfg = dict(cfg)
+                    cfg["query"] = working_input.get("query", "")
+
+            payload = _build_payload(working_input, cfg, state, runtime, cfg.get("query", ""))
+            routes.append(
+                {
+                    "agent": agent_name,
+                    "payload": payload,
+                    "query": cfg.get("query", ""),
+                }
+            )
+            trace.add_text(
+                f"已识别到您的问题{cfg.get('query','')},正在为您调度{agent_name}处理。"
+            )
+
+        return {
+            "routes": routes,
+            "pending_queries": [],
+            "active_query": None,
+            "working_input": working_input,
+            "trace": trace,
+            "route": None,
+        }
+
+    if tool_tag == "SerialCallAgent":
+        if active_query is None:
+            if pending_queries:
+                active_query = pending_queries.pop(0)
+            else:
+                active_query = working_input.get("query", "")
+
+        cfg = _parse_call_config(tool_input)
+        if cfg.get("query"):
+            active_query = cfg.get("query", active_query)
+        else:
+            cfg = dict(cfg)
+            cfg["query"] = active_query
+
+        working_input["query"] = active_query
+        payload = _build_payload(working_input, cfg, state, runtime, active_query or "")
+        agent_name = cfg.get("agent", "")
+        agent_name = _resolve_stream_agent(agent_name, runtime, is_streaming)
+
+        trace.add_text(f"已识别到您的问题{active_query},正在为您调度{agent_name}处理。")
+
+        return {
+            "route": {
+                "agent": agent_name,
+                "payload": payload,
+                "query": active_query,
+            },
+            "pending_queries": pending_queries,
+            "active_query": active_query,
+            "working_input": working_input,
+            "trace": trace,
+        }
+
+    return {}
 
 
 def run_worker(state: ReACTOR, runtime: AgentRuntime):
@@ -42,7 +224,49 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
     results = dict(execution.results or {})
     working_input = dict(state["working_input"])
     trace = _ensure_trace(state)
+    pending_queries = list(state.get("pending_queries", []))
     active_query = state.get("active_query", working_input.get("query", ""))
+    route = state.get("route")
+    routes = state.get("routes")
+    routing_patch = {}
+    if tool_tag in ("SerialCallAgent", "ParallelCallAgent"):
+        routing_patch = _prepare_routing(
+            tool_tag=tool_tag,
+            tool_input=tool_input,
+            working_input=working_input,
+            state=state,
+            runtime=runtime,
+            trace=trace,
+            pending_queries=pending_queries,
+            active_query=active_query,
+            is_streaming=working_input.get("is_streaming", False),
+        )
+        if routing_patch:
+            working_input = routing_patch.get("working_input", working_input)
+            trace = routing_patch.get("trace", trace)
+            pending_queries = routing_patch.get("pending_queries", pending_queries)
+            active_query = routing_patch.get("active_query", active_query)
+            if "route" in routing_patch:
+                route = routing_patch.get("route")
+            if "routes" in routing_patch:
+                routes = routing_patch.get("routes")
+    routing_keys: Dict[str, Any] = {}
+    for key in ("route", "routes"):
+        if key in routing_patch:
+            routing_keys[key] = routing_patch[key]
+
+    def _patch(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        patch = {
+            "working_input": working_input,
+            "trace": trace,
+            "execution": execution,
+            "pending_queries": pending_queries,
+            "active_query": active_query,
+        }
+        patch.update(routing_keys)
+        if extra:
+            patch.update(extra)
+        return patch
 
     if tool_tag == "SplitQuery":
         results[step_var] = StepResult(
@@ -58,19 +282,13 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         execution.results = results
         execution.idx = idx + 1
         state["execution"] = execution
-        return {
-            "working_input": working_input,
-            "trace": trace,
-            "execution": execution,
-            "pending_queries": state.get("pending_queries", []),
-            "active_query": active_query,
-        }
+        return _patch()
 
     if tool_tag == "ParallelCallAgent":
         is_streaming = working_input.get("is_streaming", False)
-        routes = list(state.get("routes") or [])
-        if not routes and state.get("route"):
-            routes = [state["route"]]
+        routes = list(routes or [])
+        if not routes and route:
+            routes = [route]
 
         if not routes:
             results[step_var] = StepResult(
@@ -88,13 +306,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             execution.results = results
             execution.idx = idx + 1
             state["execution"] = execution
-            return {
-                "working_input": working_input,
-                "trace": trace,
-                "execution": execution,
-                "pending_queries": state.get("pending_queries", []),
-                "active_query": None,
-            }
+            return _patch()
 
         def _execute_one(route: Dict[str, Any]) -> dict:
             query = route.get("query", "")
@@ -189,41 +401,16 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         state["working_input"] = working_input
         state["trace"] = trace
         state["pending_queries"] = []
-        return {
-            "working_input": working_input,
-            "trace": trace,
-            "execution": execution,
-            "pending_queries": [],
-            "active_query": None,
-        }
+        return _patch()
 
     if tool_tag == "AppendHistory":
         assistant_payload = runtime.resolve_tool_input(tool_input, state)
-        user_text = active_query or working_input.get("query", "")
-
-        is_streaming = working_input.get("is_streaming", False)
-        if (
-            is_streaming
-            and isinstance(assistant_payload, dict)
-            and "_stream_raw_events" in assistant_payload
-        ):
-            raw_events = assistant_payload["_stream_raw_events"]
-            non_trace_events = [
-                ev for ev in raw_events
-                if not is_graph_trace_event(ev)
-            ]
-            assistant_text = aggregate_agent_output(non_trace_events)
-            assistant_text = extract_plain_text(assistant_text)[:2000]
-        else:
-            assistant_text = extract_plain_text(assistant_payload)[:2000]
-
-        history = list(working_input.get("history", []))
-        if user_text:
-            history.append({"role": "user", "content": user_text})
-        if assistant_text:
-            history.append({"role": "assistant", "content": assistant_text})
-
-        working_input["history"] = history
+        _append_history_from_payload(
+            working_input,
+            active_query,
+            assistant_payload,
+            is_streaming=working_input.get("is_streaming", False),
+        )
         results[step_var] = StepResult(
             id=step_var,
             tag=tool_tag,
@@ -237,7 +424,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         active_query = None
 
     elif tool_tag == "SerialCallAgent":
-        route = state.get("route") or {}
+        route = route or {}
         agent_name = route.get("agent")
         payload = route.get("payload")
         if payload is None:
@@ -250,7 +437,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                 tag=tool_tag,
                 desc=plan_text,
                 status="skipped",
-                error="no agent for intent",
+                error="no agent selected",
                 output=None,
             )
             execution.result_meta[step_var] = {
@@ -261,11 +448,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             }
             execution.results = results
             execution.idx = idx + 1
-            return {
-                "working_input": working_input,
-                "trace": trace,
-                "execution": execution,
-            }
+            return _patch()
 
         func = runtime.agent_registry.get(agent_name, {}).get("execute") if agent_name else None
         if func is None:
@@ -287,7 +470,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             }
             execution.results = results
             execution.idx = idx + 1
-            return {"trace": trace, "execution": execution}
+            return _patch()
 
         is_streaming = working_input.get("is_streaming", False)
         if is_streaming:
@@ -351,6 +534,17 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                 "status": status,
             }
 
+        next_tag = None
+        if idx + 1 < len(steps):
+            next_tag = steps[idx + 1][2]
+        if next_tag == "SerialCallAgent":
+            _append_history_from_payload(
+                working_input,
+                active_query,
+                results[step_var].output,
+                is_streaming=is_streaming,
+            )
+
     elif tool_tag == "FinalOutput":
         final_value = runtime.resolve_tool_input(tool_input, state)
 
@@ -378,10 +572,4 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
     state["working_input"] = working_input
     state["trace"] = trace
     state["execution"] = execution
-    return {
-        "working_input": working_input,
-        "trace": trace,
-        "execution": execution,
-        "pending_queries": state.get("pending_queries", []),
-        "active_query": active_query,
-    }
+    return _patch()
