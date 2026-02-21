@@ -1,62 +1,66 @@
+from __future__ import annotations
 
-from inspect import istraceback
-import stat
-from Prd_Agent.Langgraph_Planner_Project.State import ReWOO
-from context import Context
-from utils.sop_runtime import extract_patch_by_sop,build_required_steps_from_sop
-'''
-Support Ability List:
-    - get SOP and detect the steps. Assert the remain steps into replanner.
+from dataclasses import is_dataclass
+from typing import Dict
 
-function:
-    - extract_patch : extract update slots from results/agent response.    <e.g: 投资期限、偏好>
-    - SOP cursor : check whether current SOP step match the 'DONE' condition.(In run_evaluator)
-    - generate required_step : be asserted into replan.(In run_evaluator)
-'''
+from State import ReACTOR
+from runtime import AgentRuntime
 
-def run_evaluator(state:ReWOO,ctx:Context) -> dict:
-    if state.get('eval_status') in ('FAILED' or 'NEED_USER'):
-        return {}
-    
-    intent = state.get('working_input',{}).get('intent','') or state.get('router_result','')
-    sop = ctx.sop_list.get(intent)
 
-    if sop:
-        patch = extract_patch_by_sop(state,sop)
-        slots = state.get('slots',{})
-        slots.update(patch.get('slots_update') or {})
-        state['slots'] = slots
-        state['last_patch'] = patch
+def run_evaluator(state: ReACTOR, runtime: AgentRuntime) -> Dict:
+    if state.get("sop_runtime", {}).get("active"):
+        return state
 
-        required = build_required_steps_from_sop(state,sop)
-        if required:
-            trace = state['trace']
-            trace.add_text(f'SOP need more preconditions. Insert {len(required)} steps.')
-            return {'required_steps':required,'eval_status':'NEED_REPLAN','trace':trace}
-    if not (state.get("plan_agenda") or []):
-        pq = list(state.get("pending_queries") or [])
-        if pq:
-            next_q = pq.pop(0)
+    execution = runtime.ensure_execution(state)
+    results = execution.results
+    replan = runtime.ensure_replan(state)
 
-            working_input = dict(state.get("working_input") or {})
-            working_input["query"] = next_q
+    if results:
+        last_key = list(results.keys())[-1]
+        last_res = results.get(last_key)
 
-            working_input["prev_intent"] = working_input.get("intent", "")
-            working_input["intent"] = ""
+        if is_dataclass(last_res):
+            status = last_res.status
+            output = last_res.output
+            error = last_res.error
+        elif isinstance(last_res, dict):
+            status = last_res.get("status")
+            output = last_res.get("output")
+            error = last_res.get("error")
+        else:
+            status = None
+            output = None
+            error = None
 
-            trace = list(state.get("trace", []))
-            trace.append(f"切换子问题：{next_q} -> 回到 Router 重新导航")
+        if status == "fail":
+            state["eval_status"] = "NEED_REPLAN"
+            if not replan.last_failure:
+                replan.last_failure = error or "agent returned fail"
+            state["trace"].add_text("智能体返回错误，正在为您重新处理任务")
+        elif isinstance(output, dict) and output.get("status") == "fail":
+            state["eval_status"] = "NEED_REPLAN"
+            if not replan.last_failure:
+                replan.last_failure = (
+                    output.get("reason")
+                    or output.get("error")
+                    or output.get("message")
+                    or "agent returned fail"
+                )
+            state["trace"].add_text("智能体返回错误，正在为您重新处理任务")
+        else:
+            state["eval_status"] = "DONE"
+            state["trace"].add_text("已经成功处理任务，正在为您整合答案")
+        if status is None and output is None and error is None:
+            state["eval_status"] = "DONE"
+            state["trace"].add_text("已经成功处理任务，正在为您整合答案")
 
-            return {
-                "pending_queries": pq,
-                "active_query": next_q,
-                "working_input": working_input,
-                "plan_agenda": [],     
-                "executed": [],         
-                "eval_status": "NEXT_QUERY",
-                "trace": trace
-            }
-            
-    return {'eval_status':'DONE'}
+    replan_count = replan.count
+    max_limit = replan.max_iteration_limit
+    if max_limit and replan_count > max_limit:
+        state["eval_status"] = "FAILED"
+        state["trace"].add_text(
+            "任务请求尝试次数超限，处理失败。十分抱歉未能处理您的问题，如果需要请联系人工客服处理。"
+        )
 
-        
+    state["replan"] = replan
+    return state
