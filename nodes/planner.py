@@ -4,7 +4,7 @@ import json
 from typing import Dict
 
 from State import ExecutionState, ReACTOR
-from prompt.rewoo_prompt_v2 import rewoo_planner_prompt
+from prompt.bank_rewoo_prompt_v2 import bank_rewoo_planner_prompt
 from runtime import AgentRuntime
 from utils.call_llm import execute_react_agent
 from utils.parse_plan import parse_plan_str
@@ -14,7 +14,7 @@ def run_planner(state: ReACTOR, runtime: AgentRuntime) -> Dict:
     task = state["task"]
     replan_hint = runtime.build_replan_hint(state)
     agent_catalog = runtime.agent_catalog
-    prompt = rewoo_planner_prompt.format(
+    prompt = bank_rewoo_planner_prompt.format(
         task=task,
         replan_hint=replan_hint,
         agent_catalog=agent_catalog,
