@@ -3,7 +3,7 @@ from typing import TypedDict,List,Dict,Any,Optional,Literal
 
 from utils.ReACTORTracer import TraceCollector
 
-StepType = Literal['SerialCallAgent','ParallelCallAgent','DispatchByIntent','AskUser','AppendHistory']
+StepType = Literal['SerialCallAgent','ParallelCallAgent','AskUser','AppendHistory','unknown']
 StepMode = Literal['serial','parallel']
  
 class PlanStep(TypedDict,total=False):
@@ -86,8 +86,7 @@ class ReACTOR(TypedDict,total=False):
 
     eval_status : str   # 'DONE' | 'FAILED' | 'NEED_DETAIL' | 'NEED_REPLAN'
     trace : TraceCollector
-    router_result : Any
-    route: Dict[str, Any]         # Router resolved single dispatch target
-    routes: List[Dict[str, Any]]  # Router resolved parallel dispatch targets
+    route: Dict[str, Any]         # Worker prepared single dispatch target
+    routes: List[Dict[str, Any]]  # Worker prepared parallel dispatch targets
     replan : ReplanState
     result: str     # Final answer(natural language)

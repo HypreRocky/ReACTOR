@@ -7,7 +7,6 @@ from langgraph.graph import StateGraph, START, END
 
 from State import ReACTOR
 from node.planner import run_planner
-from node.router import run_router
 from node.worker import run_worker
 from node.evaluator import run_evaluator
 from node.replanner import run_replanner
@@ -25,9 +24,6 @@ class AgentReACTORPlanner:
 
     def run_planner(self, state: ReACTOR):
         return self._run_with_log("planner", run_planner, state)
-
-    def run_router(self, state: ReACTOR):
-        return self._run_with_log("router", run_router, state)
 
     def run_worker(self, state: ReACTOR):
         execution = self.runtime.ensure_execution(state)
@@ -121,15 +117,8 @@ class AgentReACTORPlanner:
 
     def _route(self, state: ReACTOR):
         execution = self.runtime.ensure_execution(state)
-        steps = execution.steps
-        idx = execution.idx
-
-        if idx >= len(steps):
+        if execution.idx >= len(execution.steps):
             return "evaluator"
-
-        next_tag = steps[idx][2]
-        if next_tag in ("SerialCallAgent", "ParallelCallAgent"):
-            return "router"
         return "worker"
 
     def _how_end(self, state: ReACTOR):
@@ -140,19 +129,17 @@ class AgentReACTORPlanner:
     def build_graph(self):
         graph = StateGraph(ReACTOR)
         graph.add_node("plan", self.run_planner)
-        graph.add_node("router", self.run_router)
         graph.add_node("worker", self.run_worker)
         graph.add_node("evaluator", self.run_evaluator)
         graph.add_node("replanner", self.run_replanner)
 
         graph.add_edge(START, "plan")
-        graph.add_edge("plan", "router")
-        graph.add_edge("router", "worker")
+        graph.add_edge("plan", "worker")
 
         graph.add_conditional_edges(
             "worker",
             self._route,
-            {"worker": "worker", "router": "router", "evaluator": "evaluator"},
+            {"worker": "worker", "evaluator": "evaluator"},
         )
 
         graph.add_conditional_edges(
