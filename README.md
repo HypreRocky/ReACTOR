@@ -19,7 +19,7 @@
 
 ## 项目简介
 
-本项目实现了一个 **Planner → Router → Worker** 的显式规划型多智能体框架，  
+本项目实现了一个 **Planner → Worker → Solver** 的显式规划型多智能体框架，  
 支持计划生成、执行编排、结果验证与统一输出调度（Solver）。
 
 系统强调：
@@ -30,7 +30,7 @@
 - 延迟回放流式结果（Deferred Streaming Replay）
 
 > [!NOTE]
-> 路由逻辑完全由 **Planner** 决定，Router 不进行意图识别或动态选择。
+> 路由逻辑完全由 **Planner** 决定。
 
 ---
 
@@ -39,7 +39,6 @@
 核心组件：
 
 - **Planner**：生成可执行 Plan、支持将复杂意图query拆分、规划串/并行逻辑。
-- **Router**：根据 Plan 进行路由调度。
 - **Worker**：执行 Agent 调用。
 - **Evaluator / Replanner**：校验结果并在必要时重规划。
 - **Solver**：按布局规则统一组装最终输出，支持从外部定义答案编排。
