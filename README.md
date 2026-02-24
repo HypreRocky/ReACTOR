@@ -1,7 +1,7 @@
 <h1 align="center">ReACTOR</h1>
 
 <p align="center">
-  <b>显式规划的 Planner → Router → Worker 多智能体执行框架</b>
+  <b>显式规划的 Planner →  Worker → Solver 多智能体执行框架</b>
 </p>
 
 <p align="center">
