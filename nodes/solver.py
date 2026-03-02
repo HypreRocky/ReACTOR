@@ -145,6 +145,16 @@ def compose_output(state: ReACTOR, runtime: AgentRuntime, *, streaming: bool = F
     if state.get("eval_status") not in ("DONE", "FAILED"):
         return [] if streaming else ""
 
+    pending_question = state.get("pending_question")
+    if pending_question:
+        if isinstance(pending_question, dict):
+            question = pending_question.get("question") or ""
+        else:
+            question = str(pending_question)
+        if streaming:
+            return [question] if question else []
+        return question
+
     layout = _ensure_layout(OUTPUT_LAYOUT)
     agent_outputs = _collect_agent_outputs(state, runtime)
     summary_cache: str | None = None

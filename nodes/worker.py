@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 from State import StepResult, ReACTOR
 from runtime import AgentRuntime
 from utils.ReACTORTracer import TraceCollector
-from utils.append_history import aggregate_agent_output, extract_plain_text
-from utils.sse_solver import consume_agent_http_stream, is_graph_trace_event
+from utils.append_history import extract_plain_text
+from utils.agent_response import validate_agent_response
 
 
 def _ensure_trace(state: ReACTOR) -> TraceCollector:
@@ -55,6 +55,7 @@ def _build_payload(
     query_fallback: str,
 ) -> Any:
     payload = dict(working_input)
+    payload["slots"] = dict(state.get("slots") or {})
     query = cfg.get("query") or query_fallback
     if query:
         payload["query"] = query
@@ -67,31 +68,26 @@ def _build_payload(
     return input_val
 
 
+def _extract_agent_reply(payload: Any) -> str:
+    if isinstance(payload, dict):
+        if "data" in payload:
+            return extract_plain_text(payload.get("data"))
+        if "content" in payload:
+            return extract_plain_text(payload.get("content"))
+        return ""
+    return extract_plain_text(payload)
+
+
 def _append_history_from_payload(
     working_input: Dict[str, Any],
     active_query: Optional[str],
     assistant_payload: Any,
-    *,
-    is_streaming: bool,
 ) -> None:
     if assistant_payload is None:
         return
     user_text = active_query or working_input.get("query", "")
 
-    if (
-        is_streaming
-        and isinstance(assistant_payload, dict)
-        and "_stream_raw_events" in assistant_payload
-    ):
-        raw_events = assistant_payload["_stream_raw_events"]
-        non_trace_events = [
-            ev for ev in raw_events
-            if not is_graph_trace_event(ev)
-        ]
-        assistant_text = aggregate_agent_output(non_trace_events)
-        assistant_text = extract_plain_text(assistant_text)[:2000]
-    else:
-        assistant_text = extract_plain_text(assistant_payload)[:2000]
+    assistant_text = _extract_agent_reply(assistant_payload)[:2000]
 
     history = list(working_input.get("history", []))
     if user_text:
@@ -100,17 +96,6 @@ def _append_history_from_payload(
         history.append({"role": "assistant", "content": assistant_text})
 
     working_input["history"] = history
-
-
-def _resolve_stream_agent(agent_name: str, runtime: AgentRuntime, is_streaming: bool) -> str:
-    if not is_streaming or not agent_name:
-        return agent_name
-    if agent_name.endswith("_stream"):
-        return agent_name
-    candidate = f"{agent_name}_stream"
-    if candidate in runtime.agent_registry:
-        return candidate
-    return agent_name
 
 
 def _prepare_routing(
@@ -123,14 +108,12 @@ def _prepare_routing(
     trace: TraceCollector,
     pending_queries: List[str],
     active_query: Optional[str],
-    is_streaming: bool,
 ) -> Dict[str, Any]:
     if tool_tag == "ParallelCallAgent":
         call_list = _parse_call_list(tool_input)
         routes = []
         for cfg in call_list:
             agent_name = cfg.get("agent", "")
-            agent_name = _resolve_stream_agent(agent_name, runtime, is_streaming)
             if not cfg.get("query"):
                 if pending_queries:
                     cfg = dict(cfg)
@@ -180,7 +163,6 @@ def _prepare_routing(
         working_input["query"] = active_query
         payload = _build_payload(working_input, cfg, state, runtime, active_query or "")
         agent_name = cfg.get("agent", "")
-        agent_name = _resolve_stream_agent(agent_name, runtime, is_streaming)
 
         trace.add_text(f"已识别到您的问题{active_query},正在为您调度{agent_name}处理。")
 
@@ -239,7 +221,6 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             trace=trace,
             pending_queries=pending_queries,
             active_query=active_query,
-            is_streaming=working_input.get("is_streaming", False),
         )
         if routing_patch:
             working_input = routing_patch.get("working_input", working_input)
@@ -254,6 +235,14 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
     for key in ("route", "routes"):
         if key in routing_patch:
             routing_keys[key] = routing_patch[key]
+
+    force_replan_reason = ""
+
+    def _mark_need_replan(reason: str) -> None:
+        state["eval_status"] = "NEED_REPLAN"
+        if reason:
+            state["evaluator_hint"] = reason
+        execution.idx = len(steps)
 
     def _patch(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         patch = {
@@ -284,8 +273,44 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         state["execution"] = execution
         return _patch()
 
+    if tool_tag == "AskUser":
+        cfg = {}
+        if isinstance(tool_input, dict):
+            cfg = tool_input
+        elif isinstance(tool_input, str):
+            try:
+                parsed = json.loads(tool_input)
+                if isinstance(parsed, dict):
+                    cfg = parsed
+                else:
+                    cfg = {"question": tool_input}
+            except Exception:
+                cfg = {"question": tool_input}
+        else:
+            cfg = {"question": str(tool_input)}
+
+        question = cfg.get("question") or ""
+        results[step_var] = StepResult(
+            id=step_var,
+            tag=tool_tag,
+            desc=plan_text,
+            status="ok",
+            output=question,
+        )
+        execution.result_meta[step_var] = {
+            "tag": tool_tag,
+            "key": cfg.get("key", ""),
+            "question": question,
+        }
+        state["pending_question"] = cfg
+        trace.add_text("需要补充信息，已向用户发起提问")
+
+        execution.results = results
+        execution.idx = idx + 1
+        state["execution"] = execution
+        return _patch()
+
     if tool_tag == "ParallelCallAgent":
-        is_streaming = working_input.get("is_streaming", False)
         routes = list(routes or [])
         if not routes and route:
             routes = [route]
@@ -327,23 +352,8 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                     "output": None,
                 }
 
-            if is_streaming:
-                raw_chunks = []
-                consume_agent_http_stream(
-                    func(payload),
-                    trace,
-                    on_raw=raw_chunks.append,
-                )
-                output = {"_stream_raw_events": raw_chunks}
-                return {
-                    "query": query,
-                    "agent": agent_name,
-                    "status": "ok",
-                    "error": "",
-                    "output": output,
-                }
-
             raw_res = func(payload)
+            raw_status = getattr(raw_res, "status_code", None)
             if hasattr(raw_res, "json"):
                 try:
                     data = raw_res.json()
@@ -356,6 +366,11 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             if isinstance(data, dict) and data.get("status") == "fail":
                 status = "fail"
                 error = data.get("reason") or data.get("error") or data.get("message") or ""
+            ok, hint = validate_agent_response(data, raw_status_code=raw_status)
+            if not ok:
+                status = "fail"
+                if not error:
+                    error = hint
             return {
                 "query": query,
                 "agent": agent_name,
@@ -364,23 +379,27 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                 "output": data,
             }
 
-        if is_streaming:
-            trace.add_text("并行调用在流式模式下降级为顺序执行")
-            outputs = [_execute_one(r) for r in routes]
-        else:
-            max_workers = min(4, len(routes)) if routes else 1
-            outputs_map = {}
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = {ex.submit(_execute_one, r): i for i, r in enumerate(routes)}
-                for fut in as_completed(futures):
-                    outputs_map[futures[fut]] = fut.result()
-            outputs = [outputs_map[i] for i in sorted(outputs_map)]
+        max_workers = min(4, len(routes)) if routes else 1
+        outputs_map = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(_execute_one, r): i for i, r in enumerate(routes)}
+            for fut in as_completed(futures):
+                outputs_map[futures[fut]] = fut.result()
+        outputs = [outputs_map[i] for i in sorted(outputs_map)]
+
+        overall_error = ""
+        for item in outputs:
+            if isinstance(item, dict) and item.get("status") == "fail":
+                overall_error = item.get("error") or "agent returned error"
+                break
+        overall_status = "fail" if overall_error else "ok"
 
         results[step_var] = StepResult(
             id=step_var,
             tag=tool_tag,
             desc=plan_text,
-            status="ok",
+            status=overall_status,
+            error=overall_error,
             output=outputs,
         )
         execution.result_meta[step_var] = {
@@ -401,6 +420,8 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         state["working_input"] = working_input
         state["trace"] = trace
         state["pending_queries"] = []
+        if overall_status == "fail":
+            _mark_need_replan(overall_error)
         return _patch()
 
     if tool_tag == "AppendHistory":
@@ -409,7 +430,6 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             working_input,
             active_query,
             assistant_payload,
-            is_streaming=working_input.get("is_streaming", False),
         )
         results[step_var] = StepResult(
             id=step_var,
@@ -453,7 +473,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         func = runtime.agent_registry.get(agent_name, {}).get("execute") if agent_name else None
         if func is None:
             trace.add_text("正在处理您请求时遇到问题。相关agent未注册，已经为您反馈。")
-            state["eval_status"] = "FAILED"
+            state["eval_status"] = "NEED_REPLAN"
             results[step_var] = StepResult(
                 id=step_var,
                 tag=tool_tag,
@@ -470,69 +490,45 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             }
             execution.results = results
             execution.idx = idx + 1
+            _mark_need_replan("agent not registered")
             return _patch()
 
-        is_streaming = working_input.get("is_streaming", False)
-        if is_streaming:
-            trace.add_text("已进入流式")
-            raw_chunks = []
-            stream_cb = state.get("stream_cb")
-
-            def _on_raw(raw):
-                raw_chunks.append(raw)
-                if callable(stream_cb):
-                    stream_cb(raw)
-
-            consume_agent_http_stream(
-                func(payload),
-                trace,
-                on_raw=_on_raw,
-            )
-
-            trace.add_text("正在为您处理相关信息。")
-            output = {"_stream_raw_events": raw_chunks}
-            results[step_var] = StepResult(
-                id=step_var,
-                tag=tool_tag,
-                desc=plan_text,
-                status="ok",
-                output=output,
-            )
-            execution.result_meta[step_var] = {
-                "tag": tool_tag,
-                "agent": agent_name,
-                "query": route.get("query"),
-                "status": "ok",
-            }
+        raw_res = func(payload)
+        raw_status = getattr(raw_res, "status_code", None)
+        trace.add_text("正在为您处理相关信息。")
+        if hasattr(raw_res, "json"):
+            try:
+                data = raw_res.json()
+            except Exception:
+                data = raw_res.text
         else:
-            raw_res = func(payload)
-            trace.add_text("正在为您处理相关信息。")
-            if hasattr(raw_res, "json"):
-                try:
-                    data = raw_res.json()
-                except Exception:
-                    data = raw_res.text
-            else:
-                data = raw_res
-            status = "ok"
-            error = ""
-            if isinstance(data, dict) and data.get("status") == "fail":
-                status = "fail"
-                error = data.get("reason") or data.get("error") or data.get("message") or ""
-            results[step_var] = StepResult(
-                id=step_var,
-                tag=tool_tag,
-                desc=plan_text,
-                status=status,
-                error=error,
-                output=data,
-            )
-            execution.result_meta[step_var] = {
-                "tag": tool_tag,
-                "agent": agent_name,
-                "query": route.get("query"),
-                "status": status,
-            }
+            data = raw_res
+        status = "ok"
+        error = ""
+        if isinstance(data, dict) and data.get("status") == "fail":
+            status = "fail"
+            error = data.get("reason") or data.get("error") or data.get("message") or ""
+        ok, hint = validate_agent_response(data, raw_status_code=raw_status)
+        if not ok:
+            status = "fail"
+            if not error:
+                error = hint
+        results[step_var] = StepResult(
+            id=step_var,
+            tag=tool_tag,
+            desc=plan_text,
+            status=status,
+            error=error,
+            output=data,
+        )
+        execution.result_meta[step_var] = {
+            "tag": tool_tag,
+            "agent": agent_name,
+            "query": route.get("query"),
+            "status": status,
+        }
+        if status == "fail":
+            force_replan_reason = error or "agent returned error"
 
     elif tool_tag == "FinalOutput":
         final_value = runtime.resolve_tool_input(tool_input, state)
@@ -557,6 +553,8 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
 
     execution.results = results
     execution.idx = idx + 1
+    if force_replan_reason:
+        _mark_need_replan(force_replan_reason)
 
     state["working_input"] = working_input
     state["trace"] = trace

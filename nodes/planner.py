@@ -8,16 +8,37 @@ from prompt.bank_rewoo_prompt_v2 import bank_rewoo_planner_prompt
 from runtime import AgentRuntime
 from utils.call_llm import execute_react_agent
 from utils.parse_plan import parse_plan_str
+from utils.sop_engine import build_plan_from_sop
 
 
 def run_planner(state: ReACTOR, runtime: AgentRuntime) -> Dict:
     task = state["task"]
+    sop_runtime = state.get("sop_runtime") or {}
+    active_sop_id = sop_runtime.get("active_sop_id")
+    sop_match = None
+    if active_sop_id and active_sop_id in runtime.sop_registry:
+        sop_match = runtime.sop_registry.get(active_sop_id)
+    if sop_match is None:
+        sop_match = runtime.match_sop(task)
+    if sop_match is None:
+        history = state.get("working_input", {}).get("history") or []
+        for item in reversed(history):
+            if isinstance(item, dict) and item.get("role") == "user":
+                cand = runtime.match_sop(item.get("content", ""))
+                if cand is not None:
+                    sop_match = cand
+                    break
+    if sop_match:
+        return build_plan_from_sop(sop_match, state)
+
     replan_hint = runtime.build_replan_hint(state)
     agent_catalog = runtime.agent_catalog
+    sop_catalog = runtime.sop_catalog
     prompt = bank_rewoo_planner_prompt.format(
         task=task,
         replan_hint=replan_hint,
         agent_catalog=agent_catalog,
+        sop_catalog=sop_catalog,
     )
 
     plan_str = execute_react_agent(prompt=prompt)
