@@ -85,6 +85,9 @@ class ReACTOR(TypedDict,total=False):
     pending_question: Dict[str,Any]   
 
     eval_status : str   # 'DONE' | 'FAILED' | 'NEED_DETAIL' | 'NEED_REPLAN'
+    evaluator_config : Dict[str,Any]  # quality/confidence thresholds
+    evaluator_hint : str              # failure hint for replan / reward model
+    evaluator_hook : Any              # optional external evaluator hook
     trace : TraceCollector
     route: Dict[str, Any]         # Worker prepared single dispatch target
     routes: List[Dict[str, Any]]  # Worker prepared parallel dispatch targets
