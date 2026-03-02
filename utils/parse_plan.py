@@ -3,18 +3,45 @@ import json
 from typing import List
 from State import PlanStep
 
-def parse_plan_str(plan_str :str):
-    pattern = r'^Plan\s*[:：]\s*(.+?)\s*[\|｜]\s*(\#E\d+)\s*[=＝]\s*([A-Za-z_]\w*)\s*\[(.*)\]\s*$'
-    matches = re.findall(pattern, plan_str, flags=re.M)
-    
+def _normalize_tool_input(raw: str) -> str:
+    s = raw.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        inner = s[1:-1].strip()
+        # Strip quotes for JSON-like payloads or simple scalars
+        if inner:
+            if inner[0] in "[{":
+                s = inner
+            elif s[0] not in inner:
+                s = inner
+    return s
+
+
+def parse_plan_str(plan_str: str):
+    # Support ASCII/full-width punctuation and flexible spacing, parse per-line to avoid
+    # prematurely stopping on ']' inside JSON list payloads.
+    pattern = r'^Plan[:：]\s*(.*?)\s*[|\uFF5C]\s*(#E\d+)\s*[=＝]\s*([A-Za-z_]\w*)\s*\[(.*)\]\s*$'
     steps = []
-    for desc,var,tool_tag,tool_input in matches:
-        steps.append((desc.strip(),var.strip(),tool_tag.strip(),tool_input))
-    
-    reasoning_match = re.search(r'思考过程：(.+?)(?=Plan:)',plan_str,flags=re.S)
-    reasoning_overview = reasoning_match.group(1).strip() if reasoning_match else ''
-    
-    return steps,reasoning_overview
+    for line in plan_str.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = re.match(pattern, line)
+        if not match:
+            continue
+        desc, var, tool_tag, tool_input = match.groups()
+        steps.append(
+            (
+                desc.strip(),
+                var.strip(),
+                tool_tag.strip(),
+                _normalize_tool_input(tool_input),
+            )
+        )
+
+    reasoning_match = re.search(r'思考过程[:：](.+?)(?=Plan[:：])', plan_str, flags=re.S)
+    reasoning_overview = reasoning_match.group(1).strip() if reasoning_match else ""
+
+    return steps, reasoning_overview
 
 def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep]:
     '''
@@ -33,22 +60,12 @@ def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep
                 })
             continue
 
-        if tool_tag == 'DispatchByIntent':
-            agenda.append({
-                'var':var,
-                'id':var,
-                'desc':desc,
-                'type':'dispatch_by_intent',
-                'mode':'serial',
-                'input':tool_input
-            })
-            continue
 
-        if tool_tag == 'CallAgent':
+        if tool_tag == 'SerialCallAgent':
             try:
                 cfg = json.loads(tool_input)
             except Exception:
-                cfg = {'key':'','question':str(tool_input)}
+                cfg = {'agent': str(tool_input), 'input': '$WORKING_INPUT'}
             agenda.append({
                 'var':var,
                 'id':var,
@@ -56,6 +73,21 @@ def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep
                 'type':'call_agent',
                 'mode':'serial',
                 'agent':cfg.get('agent') if isinstance(cfg,dict) else '',
+                'input':cfg
+                })
+            continue
+        if tool_tag == 'ParallelCallAgent':
+            try:
+                cfg = json.loads(tool_input)
+            except Exception:
+                cfg = []
+            agenda.append({
+                'var':var,
+                'id':var,
+                'desc':desc,
+                'type':'call_agent',
+                'mode':'parallel',
+                'agent':'',
                 'input':cfg
                 })
             continue
@@ -76,24 +108,18 @@ def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep
             })
             continue
 
-        # if planner give an unknown tag, set to dispatch_by_intent as default
+        # if planner gives an unknown tag, keep a placeholder step for debugging
         agenda.append({
             'var':var,
             'id':var,
-            'desc':f'{desc}(fallback:{tool_tag})',
-            'type':'dispatch_by_intent',
+            'desc':f'{desc}(unknown:{tool_tag})',
+            'type':'unknown',
             'mode':'serial'
         })
-    
-    # if agenda do not have any executable calling, add an dispatch_by_intent automatically
-    has_exec = any(s['type'] in ('dispatch_by_intent','call_agent') for s in agenda)
+
+    # if agenda does not have any executable calling, do not auto-insert steps
+    has_exec = any(s['type'] == 'call_agent' for s in agenda)
     if not has_exec:
-        agenda.append({
-            'var':'#E_AUTO',
-            'id':'#E_AUTO',
-            'desc':'自动补充，按意图执行',
-            'type':'dispatch_by_intent',
-            'mode':'serial'
-        })
+        return agenda
     
     return agenda
