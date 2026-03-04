@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import inspect
 from typing import Any, Dict, List, Optional
 
 from State import StepResult, ReACTOR
@@ -133,9 +134,9 @@ def _prepare_routing(
                     "query": cfg.get("query", ""),
                 }
             )
-            trace.add_text(
-                f"已识别到您的问题{cfg.get('query','')},正在为您调度{agent_name}处理。"
-            )
+            title = cfg.get("title") or f"正在调用{agent_name}智能体"
+            subtitle = cfg.get("summary") or cfg.get("query", "") or ""
+            trace.add_with_detail(title=title, detail=subtitle)
 
         return {
             "routes": routes,
@@ -164,7 +165,9 @@ def _prepare_routing(
         payload = _build_payload(working_input, cfg, state, runtime, active_query or "")
         agent_name = cfg.get("agent", "")
 
-        trace.add_text(f"已识别到您的问题{active_query},正在为您调度{agent_name}处理。")
+        title = cfg.get("title") or f"正在调用{agent_name}智能体"
+        subtitle = cfg.get("summary") or cfg.get("query", "") or ""
+        trace.add_with_detail(title=title, detail=subtitle)
 
         return {
             "route": {
@@ -181,7 +184,32 @@ def _prepare_routing(
     return {}
 
 
-def run_worker(state: ReACTOR, runtime: AgentRuntime):
+async def _execute_agent_async(func, payload: Dict[str, Any]) -> Any:
+    if inspect.iscoroutinefunction(func):
+        return await func(payload)
+    return await asyncio.to_thread(func, payload)
+
+
+def _run_coroutine(coro):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # If we're already in an event loop, run in a new thread to avoid nesting.
+    result_box: Dict[str, Any] = {}
+
+    def _runner():
+        result_box["value"] = asyncio.run(coro)
+
+    import threading
+
+    t = threading.Thread(target=_runner)
+    t.start()
+    t.join()
+    return result_box.get("value")
+
+
+async def run_worker_async(state: ReACTOR, runtime: AgentRuntime):
     execution = runtime.ensure_execution(state)
     steps = execution.steps
     idx = execution.idx
@@ -189,6 +217,33 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         return None
 
     plan_text, step_var, tool_tag, tool_input = steps[idx]
+
+    def _short(val: Any, limit: int = 800) -> str:
+        try:
+            text = json.dumps(val, ensure_ascii=False)
+        except Exception:
+            text = str(val)
+        if len(text) > limit:
+            return text[:limit] + "..."
+        return text
+
+    def _print_step_result(step_id: str) -> None:
+        res = results.get(step_id)
+        if res is None:
+            return
+        if hasattr(res, "status"):
+            status = res.status
+            output = res.output
+            error = res.error
+        elif isinstance(res, dict):
+            status = res.get("status")
+            output = res.get("output")
+            error = res.get("error")
+        else:
+            status = None
+            output = res
+            error = ""
+        print(f"[worker] result id={step_id} status={status} error={error} output={_short(output)}")
 
     if idx == 0:
         print("===================== FULL PLAN ==========================")
@@ -202,9 +257,11 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             print(f"      input: {inp}")
             print(f"      depends_on: {deps if deps else 'none'}")
         print("==========================================================")
+    print(f"[worker] step={idx + 1}/{len(steps)} tag={tool_tag} input={_short(tool_input)}")
 
     results = dict(execution.results or {})
-    working_input = dict(state["working_input"])
+    working_input = dict(state.get("working_input") or state.get("raw_input") or {})
+    state["working_input"] = working_input
     trace = _ensure_trace(state)
     pending_queries = list(state.get("pending_queries", []))
     active_query = state.get("active_query", working_input.get("query", ""))
@@ -271,6 +328,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         execution.results = results
         execution.idx = idx + 1
         state["execution"] = execution
+        _print_step_result(step_var)
         return _patch()
 
     if tool_tag == "AskUser":
@@ -308,6 +366,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         execution.results = results
         execution.idx = idx + 1
         state["execution"] = execution
+        _print_step_result(step_var)
         return _patch()
 
     if tool_tag == "ParallelCallAgent":
@@ -331,9 +390,10 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             execution.results = results
             execution.idx = idx + 1
             state["execution"] = execution
+            _print_step_result(step_var)
             return _patch()
 
-        def _execute_one(route: Dict[str, Any]) -> dict:
+        async def _execute_one(route: Dict[str, Any]) -> dict:
             query = route.get("query", "")
             agent_name = route.get("agent")
             payload = route.get("payload")
@@ -352,7 +412,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                     "output": None,
                 }
 
-            raw_res = func(payload)
+            raw_res = await _execute_agent_async(func, payload)
             raw_status = getattr(raw_res, "status_code", None)
             if hasattr(raw_res, "json"):
                 try:
@@ -379,13 +439,11 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
                 "output": data,
             }
 
-        max_workers = min(4, len(routes)) if routes else 1
-        outputs_map = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(_execute_one, r): i for i, r in enumerate(routes)}
-            for fut in as_completed(futures):
-                outputs_map[futures[fut]] = fut.result()
-        outputs = [outputs_map[i] for i in sorted(outputs_map)]
+        async def _run_parallel():
+            tasks = [_execute_one(r) for r in routes]
+            return await asyncio.gather(*tasks)
+
+        outputs = await _run_parallel()
 
         overall_error = ""
         for item in outputs:
@@ -422,6 +480,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
         state["pending_queries"] = []
         if overall_status == "fail":
             _mark_need_replan(overall_error)
+        _print_step_result(step_var)
         return _patch()
 
     if tool_tag == "AppendHistory":
@@ -468,6 +527,7 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             }
             execution.results = results
             execution.idx = idx + 1
+            _print_step_result(step_var)
             return _patch()
 
         func = runtime.agent_registry.get(agent_name, {}).get("execute") if agent_name else None
@@ -491,9 +551,10 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
             execution.results = results
             execution.idx = idx + 1
             _mark_need_replan("agent not registered")
+            _print_step_result(step_var)
             return _patch()
 
-        raw_res = func(payload)
+        raw_res = await _execute_agent_async(func, payload)
         raw_status = getattr(raw_res, "status_code", None)
         trace.add_text("正在为您处理相关信息。")
         if hasattr(raw_res, "json"):
@@ -559,4 +620,9 @@ def run_worker(state: ReACTOR, runtime: AgentRuntime):
     state["working_input"] = working_input
     state["trace"] = trace
     state["execution"] = execution
+    _print_step_result(step_var)
     return _patch()
+
+
+def run_worker(state: ReACTOR, runtime: AgentRuntime):
+    return _run_coroutine(run_worker_async(state, runtime))

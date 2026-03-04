@@ -4,7 +4,7 @@ import json
 from typing import Dict
 
 from State import ExecutionState, ReACTOR
-from prompt.bank_rewoo_prompt_v2 import bank_rewoo_planner_prompt
+from prompt.planner_prompt import bank_rewoo_planner_prompt
 from runtime import AgentRuntime
 from utils.call_llm import execute_react_agent
 from utils.parse_plan import parse_plan_str

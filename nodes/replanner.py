@@ -7,7 +7,10 @@ from runtime import AgentRuntime
 
 
 def run_replanner(state: ReACTOR, runtime: AgentRuntime) -> Dict:
-    raw_input = state["raw_input"]
+    raw_input = state.get("raw_input")
+    if not isinstance(raw_input, dict):
+        raw_input = state.get("working_input") or {}
+        state["raw_input"] = raw_input
 
     if state.get("sop_runtime", {}).get("active"):
         return state

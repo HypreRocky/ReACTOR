@@ -5,7 +5,7 @@ from dataclasses import is_dataclass
 from typing import Any, Dict, List
 
 from State import ReACTOR
-from prompt.bank_rewoo_prompt_v2 import bank_rewoo_solver_prompt
+from prompt.solver_prompt import bank_rewoo_solver_prompt
 from runtime import AgentRuntime
 from utils.append_history import aggregate_agent_output, extract_plain_text
 from utils.call_llm import execute_react_agent

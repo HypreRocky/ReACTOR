@@ -1,56 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import is_dataclass
-from typing import Any, Dict, Iterable, Optional, Tuple
+import json
+from typing import Any, Dict
 
 from State import ReACTOR
 from runtime import AgentRuntime
-
-
-_QUALITY_KEYS = ("quality", "quality_score", "eval_quality")
-_CONFIDENCE_KEYS = ("confidence", "confidence_score", "eval_confidence", "conf")
-_FAIL_HINT_KEYS = ("failure_hint", "reason", "error", "message", "hint")
-
-
-def _iter_values(obj: Any) -> Iterable[Any]:
-    if isinstance(obj, dict):
-        return obj.values()
-    if isinstance(obj, list):
-        return obj
-    return []
-
-
-def _extract_metric(obj: Any, keys: Tuple[str, ...], depth: int = 0, max_depth: int = 3) -> Optional[float]:
-    if depth > max_depth:
-        return None
-    if isinstance(obj, dict):
-        for key in keys:
-            value = obj.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-        for value in _iter_values(obj):
-            found = _extract_metric(value, keys, depth + 1, max_depth)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for value in obj:
-            found = _extract_metric(value, keys, depth + 1, max_depth)
-            if found is not None:
-                return found
-    return None
-
-
-def _extract_failure_hint(output: Any) -> str:
-    if isinstance(output, dict):
-        for key in _FAIL_HINT_KEYS:
-            value = output.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        for value in _iter_values(output):
-            hint = _extract_failure_hint(value)
-            if hint:
-                return hint
-    return ""
+from prompt.evaluator_prompt import bank_rewoo_evaluator_prompt
+from utils.call_llm import execute_react_agent
 
 
 def _apply_external_hook(state: ReACTOR, runtime: AgentRuntime, output: Any) -> Dict[str, Any]:
@@ -67,6 +24,31 @@ def _apply_external_hook(state: ReACTOR, runtime: AgentRuntime, output: Any) -> 
     return {}
 
 
+def _safe_json_dumps(obj: Any) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(obj)
+
+
+def _parse_eval_result(text: str) -> Dict[str, str]:
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            decision = str(data.get("decision", "")).strip().upper()
+            hint = str(data.get("hint", "")).strip()
+            return {"decision": decision, "hint": hint}
+    except Exception:
+        pass
+
+    upper = text.strip().upper()
+    if "PASS" in upper and "FAIL" not in upper:
+        return {"decision": "PASS", "hint": ""}
+    if "FAIL" in upper:
+        return {"decision": "FAIL", "hint": text.strip()}
+    return {"decision": "FAIL", "hint": "评估输出无法解析"}
+
+
 def run_evaluator(state: ReACTOR, runtime: AgentRuntime) -> Dict:
     if state.get("sop_runtime", {}).get("active"):
         return state
@@ -74,6 +56,12 @@ def run_evaluator(state: ReACTOR, runtime: AgentRuntime) -> Dict:
     execution = runtime.ensure_execution(state)
     results = execution.results
     replan = runtime.ensure_replan(state)
+
+    if state.get("eval_status") == "NEED_REPLAN":
+        if not replan.last_failure:
+            replan.last_failure = state.get("evaluator_hint") or "agent returned error"
+        state["replan"] = replan
+        return state
 
     if results:
         last_key = list(results.keys())[-1]
@@ -106,47 +94,35 @@ def run_evaluator(state: ReACTOR, runtime: AgentRuntime) -> Dict:
                 replan.last_failure = failure_hint
             state["evaluator_hint"] = failure_hint
             state["trace"].add_text("智能体返回错误，正在为您重新处理任务")
-        elif isinstance(output, dict) and output.get("status") == "fail":
-            failure_hint = (
-                output.get("reason")
-                or output.get("error")
-                or output.get("message")
-                or "agent returned fail"
-            )
-            state["eval_status"] = "NEED_REPLAN"
-            if not replan.last_failure:
-                replan.last_failure = failure_hint
-            state["evaluator_hint"] = failure_hint
-            state["trace"].add_text("智能体返回错误，正在为您重新处理任务")
         else:
             hook_result = _apply_external_hook(state, runtime, output)
             if hook_result.get("should_replan") is True:
                 hint = (
                     hook_result.get("hint")
                     or hook_result.get("reason")
-                    or _extract_failure_hint(output)
                     or "external evaluator rejected result"
                 )
                 _mark_replan(str(hint))
             else:
-                cfg = state.get("evaluator_config") or {}
-                if cfg.get("enable_quality_gate", True):
-                    min_conf = float(cfg.get("min_confidence", 0.55))
-                    min_quality = float(cfg.get("min_quality", 0.5))
-                    confidence = _extract_metric(output, _CONFIDENCE_KEYS)
-                    quality = _extract_metric(output, _QUALITY_KEYS)
-                    if confidence is not None and confidence < min_conf:
-                        _mark_replan(f"low confidence {confidence:.3f} < {min_conf:.3f}")
-                    elif quality is not None and quality < min_quality:
-                        _mark_replan(f"low quality {quality:.3f} < {min_quality:.3f}")
-                    else:
-                        state["eval_status"] = "DONE"
-                        state["evaluator_hint"] = ""
-                        state["trace"].add_text("已经成功处理任务，正在为您整合答案")
-                else:
+                task = state.get("task") or state.get("working_input", {}).get("query", "")
+                evidence = _safe_json_dumps(runtime.results_to_plain(results))
+                answer = _safe_json_dumps(output)
+
+                prompt = bank_rewoo_evaluator_prompt.format(
+                    task=task,
+                    answer=answer,
+                    evidence=evidence,
+                )
+                eval_text = execute_react_agent(prompt=prompt)
+                parsed = _parse_eval_result(eval_text)
+                decision = parsed.get("decision", "").upper()
+                if decision == "PASS":
                     state["eval_status"] = "DONE"
                     state["evaluator_hint"] = ""
-                    state["trace"].add_text("已经成功处理任务，正在为您整合答案")
+                    state["trace"].add_text("评估通过，正在为您整合答案")
+                else:
+                    hint = parsed.get("hint") or "评估未通过"
+                    _mark_replan(hint)
         if status is None and output is None and error is None:
             state["eval_status"] = "DONE"
             state["evaluator_hint"] = ""
