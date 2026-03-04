@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import time
+import json
+import asyncio
+import inspect
 from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
 
 from State import ReACTOR
 from node.planner import run_planner
-from node.worker import run_worker
+from node.worker import run_worker_async
 from node.evaluator import run_evaluator
 from node.replanner import run_replanner
 from node.solver import summary_plan_and_results, compose_output
@@ -20,24 +23,34 @@ class AgentReACTORPlanner:
     def __init__(self):
         self.runtime = AgentRuntime()
         self.logger = ReACTORLogger()
+        self.evaluator_enabled = True
         self.graph = self.build_graph()
 
-    def run_planner(self, state: ReACTOR):
-        return self._run_with_log("planner", run_planner, state)
+    def set_evaluator(self, enabled: bool = True):
+        self.evaluator_enabled = bool(enabled)
+        return self
 
-    def run_worker(self, state: ReACTOR):
+    async def run_planner_async(self, state: ReACTOR):
+        return await self._run_with_log_async("planner", run_planner, state)
+
+    async def run_worker_async(self, state: ReACTOR):
         execution = self.runtime.ensure_execution(state)
         steps = execution.steps
         idx = execution.idx
         tag = steps[idx][2] if idx < len(steps) else ""
         node_name = "callagent" if tag in ("SerialCallAgent", "ParallelCallAgent") else "worker"
-        return self._run_with_log(node_name, run_worker, state)
+        return await self._run_with_log_async(node_name, run_worker_async, state)
 
-    def run_evaluator(self, state: ReACTOR):
-        return self._run_with_log("evaluator", run_evaluator, state)
+    async def run_evaluator_async(self, state: ReACTOR):
+        if not self.evaluator_enabled:
+            patch = {"eval_status": "DONE", "evaluator_hint": ""}
+            if isinstance(state.get("trace"), TraceCollector):
+                state["trace"].add_text("评估已关闭，直接输出结果")
+            return patch
+        return await self._run_with_log_async("evaluator", run_evaluator, state)
 
-    def run_replanner(self, state: ReACTOR):
-        return self._run_with_log("replanner", run_replanner, state)
+    async def run_replanner_async(self, state: ReACTOR):
+        return await self._run_with_log_async("replanner", run_replanner, state)
 
     def summary_plan_and_results(self, state: ReACTOR):
         return summary_plan_and_results(state, self.runtime)
@@ -96,42 +109,68 @@ class AgentReACTORPlanner:
         except Exception:
             pass
 
-    def _run_with_log(self, name: str, fn, state: ReACTOR):
+    async def _run_with_log_async(self, name: str, fn, state: ReACTOR):
         start = time.perf_counter()
         input_state = self._summarize_state(state)
-        patch = fn(state, self.runtime)
+
+        if inspect.iscoroutinefunction(fn):
+            patch = await fn(state, self.runtime)
+        else:
+            patch = await asyncio.to_thread(fn, state, self.runtime)
+
         duration_ms = round((time.perf_counter() - start) * 1000, 3)
 
+        trace_payload = self._extract_trace_from(state, patch)
         event = {
             "node": name,
             "duration_ms": duration_ms,
             "input": input_state,
             "output": patch,
-            "trace": self._extract_trace_from(state, patch),
+            "trace": trace_payload,
         }
         if name == "planner" and isinstance(patch, dict):
             event["plan_string"] = patch.get("plan_string", "")
             event["reasoning_overview"] = patch.get("reasoning_overview", "")
         self._log_event(event)
+        duration_s = round(duration_ms / 1000.0, 3)
+        print(f"[node:{name}] duration_s={duration_s}s")
+        if trace_payload:
+            if isinstance(trace_payload, list):
+                latest = trace_payload[-1:]
+            else:
+                latest = trace_payload
+            try:
+                trace_text = json.dumps(latest, ensure_ascii=False)
+            except Exception:
+                trace_text = str(latest)
+            if len(trace_text) > 1200:
+                trace_text = trace_text[:1200] + "..."
+            print(f"[node:{name}] trace={trace_text}")
         return patch
 
     def _route(self, state: ReACTOR):
         execution = self.runtime.ensure_execution(state)
         if execution.idx >= len(execution.steps):
-            return "evaluator"
-        return "worker"
+            next_node = "evaluator"
+        else:
+            next_node = "worker"
+        print(f"[route] worker -> {next_node} (idx={execution.idx}, total={len(execution.steps)})")
+        return next_node
 
     def _how_end(self, state: ReACTOR):
         if state.get("eval_status") in ("DONE", "FAILED"):
-            return "END"
-        return "replanner"
+            next_node = "END"
+        else:
+            next_node = "replanner"
+        print(f"[route] evaluator -> {next_node} (eval_status={state.get('eval_status')})")
+        return next_node
 
     def build_graph(self):
         graph = StateGraph(ReACTOR)
-        graph.add_node("plan", self.run_planner)
-        graph.add_node("worker", self.run_worker)
-        graph.add_node("evaluator", self.run_evaluator)
-        graph.add_node("replanner", self.run_replanner)
+        graph.add_node("plan", self.run_planner_async)
+        graph.add_node("worker", self.run_worker_async)
+        graph.add_node("evaluator", self.run_evaluator_async)
+        graph.add_node("replanner", self.run_replanner_async)
 
         graph.add_edge(START, "plan")
         graph.add_edge("plan", "worker")
