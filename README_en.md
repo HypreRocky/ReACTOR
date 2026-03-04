@@ -75,5 +75,6 @@ When disabled, execution proceeds directly to the final output after the Worker 
 ## Future Improvements
 - More customizable solver output composition (including a2ui support)
 - Skill registration and invocation alongside agents
+- Memory
 - Self-refinement mechanisms
 - Performance optimization and configurable execution switches
