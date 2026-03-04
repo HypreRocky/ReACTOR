@@ -27,7 +27,7 @@
 | Worker | 按 Plan 执行动作，负责路由 agent、串并行调度、结果写回、异常快速标记。 |
 | Evaluator | 基于 evaluator prompt 调用模型评估“是否已解决问题”；不通过则给出 hint 并触发 replan。 |
 | Replanner | 基于上轮失败原因、上轮计划与结果进行重规划。 |
-| Solver | 图结束后统一组织输出（可流式/非流式），不是图内节点。 |
+| Solver | 图结束后统一组织输出（可流式/非流式），非主图内节点。 |
 
 ## Plan Action 约束
 
@@ -39,32 +39,6 @@ Planner 输出只能使用以下 Action：
 - `AppendHistory['#E?']`
 - `AskUser['{"question":"...","key":"..."}']`
 - `FinalOutput['#E?']`
-
-## SOP 注册与命中
-
-### 1) 注册入口
-
-在 `conf/sop_config.py` 中配置：
-
-```python
-sop_config = {
-    "base_dir": BASE_DIR,
-    "sops": [
-        {"path": "sop/mock_prd_sop.yaml", "triggers": ["存款", "定期"]},
-        {"path": "sop/mock_loan_sop.yaml"},
-    ],
-}
-```
-
-说明：
-
-- `path` 支持相对 `base_dir` 或绝对路径，适合注册外部定义的 SOP。
-- `triggers` 可覆盖/补充 YAML 内触发词。
-- Planner 会基于 query/history 进行 SOP 命中判断，命中后优先使用 SOP 规划。
-
-### 2) 多轮 SOP 续跑
-
-每轮把服务返回的 `sop_runtime` 与 `slots` 传回下一轮 `working_input`，可继续从上次状态运行。
 
 ## Agent 注册
 
@@ -97,8 +71,6 @@ planner.set_evaluator(False)
 python3 Service.py
 ```
 
-默认地址：`http://127.0.0.1:8080`
-
 ### 2) 非流式接口
 
 - `POST /plan`
@@ -117,16 +89,6 @@ python3 Service.py
   - `final`：最终输出分片
   - `state`：状态回传（`sop_runtime/slots/pending_question/plan_string`）
   - `done`：结束事件
-
-### 4) Demo 脚本
-
-```bash
-python3 demo_call_plan.py "帮看下最近的市场热点，再推荐个产品"
-python3 demo_call_plan.py "帮看下最近的市场热点，再推荐个产品" --stream
-python3 demo_call_plan.py "继续" --state-file /tmp/reactor_state.json
-```
-
-`--state-file` 会自动保存/加载 `sop_runtime` 与 `slots`，方便本地多轮续跑。
 
 ## 输出编排
 
@@ -153,3 +115,9 @@ Solver 按 `src/output_config.py` 组装最终输出，支持 section：
 - `node/solver.py`
 - `utils/sop_registry.py` / `utils/sop_engine.py`
 - `conf/config.py` / `conf/sop_config.py`
+
+## 后续优化方向
+
+- solver支持更定制化答案编排、包括a2ui等
+- 支持skills注册及调用，与agent并行
+- self-refine
