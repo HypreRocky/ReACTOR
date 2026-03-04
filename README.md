@@ -92,6 +92,7 @@ python3 Service.py
 - 事件：
   - `final`：最终输出分片
   - `state`：状态回传（`sop_runtime/slots/pending_question/plan_string`）
+  - `trace`：思维链
   - `done`：结束事件
 
 ## 输出编排
