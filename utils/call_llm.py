@@ -1,9 +1,9 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-
+from conf.config import github_api_key
 _llm = ChatOpenAI(
     model="gpt-4o-mini",
-    api_key="", 
+    api_key=github_api_key, 
     base_url="https://models.inference.ai.azure.com",
     temperature = 0.01
 )

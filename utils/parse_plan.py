@@ -73,6 +73,8 @@ def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep
                 'type':'call_agent',
                 'mode':'serial',
                 'agent':cfg.get('agent') if isinstance(cfg,dict) else '',
+                'summary':cfg.get('summary') if isinstance(cfg,dict) else '',
+                'title':cfg.get('title') if isinstance(cfg,dict) else '',
                 'input':cfg
                 })
             continue
@@ -88,6 +90,8 @@ def steps_to_agenda(raw_steps: List[tuple],working_input: dict) -> List[PlanStep
                 'type':'call_agent',
                 'mode':'parallel',
                 'agent':'',
+                'summary':'',
+                'title':'',
                 'input':cfg
                 })
             continue
