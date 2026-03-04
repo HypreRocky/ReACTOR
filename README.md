@@ -1,5 +1,7 @@
 <h1 align="center">ReACTOR v5</h1>
-<p align="center">Python 3.10+ | 库状态：在建设中 | License：Apache License 2.0</p>
+<p align="center">
+Python 3.10+ · Status: 🚧 Under Construction · License: Apache-2.0
+</p>
 
 一个基于 `Planner -> Worker -> Evaluator -> Replanner` 图执行的多智能体编排框架。  
 特点是：复杂 query 可拆分、支持串并联 agent 调用、支持 SOP 注册与命中、支持多轮状态回传与续跑。
