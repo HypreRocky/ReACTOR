@@ -111,7 +111,8 @@ Solver 按 `src/output_config.py` 组装最终输出，支持 section：
 
 ## 后续优化方向
 
-- solver支持更定制化答案编排、包括a2ui等
-- 支持skills注册及调用，与agent并行
+- solver支持结构化输出编排或agent2ui等
+- 支持skills注册及调用，与agent调用并行
+- Memory
 - self-refine
 - 优化耗时和开关
