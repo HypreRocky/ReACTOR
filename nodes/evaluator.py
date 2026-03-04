@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from State import ReACTOR
 from runtime import AgentRuntime
-from prompt.evaluator_prompt import bank_rewoo_evaluator_prompt
+from prompt.evaluator_prompt import reactor_evaluator_prompt
 from utils.call_llm import execute_react_agent
 
 
@@ -108,7 +108,7 @@ def run_evaluator(state: ReACTOR, runtime: AgentRuntime) -> Dict:
                 evidence = _safe_json_dumps(runtime.results_to_plain(results))
                 answer = _safe_json_dumps(output)
 
-                prompt = bank_rewoo_evaluator_prompt.format(
+                prompt = reactor_evaluator_prompt.format(
                     task=task,
                     answer=answer,
                     evidence=evidence,

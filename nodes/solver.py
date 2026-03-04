@@ -5,7 +5,7 @@ from dataclasses import is_dataclass
 from typing import Any, Dict, List
 
 from State import ReACTOR
-from prompt.solver_prompt import bank_rewoo_solver_prompt
+from prompt.solver_prompt import reactor_solver_prompt
 from runtime import AgentRuntime
 from utils.append_history import aggregate_agent_output, extract_plain_text
 from utils.call_llm import execute_react_agent
@@ -29,7 +29,7 @@ def _build_summary(state: ReACTOR, runtime: AgentRuntime) -> str:
     execution = runtime.ensure_execution(state)
     evidence = json.dumps(runtime.results_to_plain(execution.results), ensure_ascii=False, indent=2)
 
-    solve_prompt = bank_rewoo_solver_prompt.format(
+    solve_prompt = reactor_solver_prompt.format(
         reasoning_overview=reasoning_overview,
         plan_str=plan_str,
         evidence=evidence,
