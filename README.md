@@ -1,13 +1,9 @@
 <h1 align="center">ReACTOR v5</h1>
 <p align="center">
 
-![GitHub stars](https://img.shields.io/github/stars/YOURNAME/reactor?style=for-the-badge)
-![GitHub forks](https://img.shields.io/github/forks/YOURNAME/reactor?style=for-the-badge)
-
-![Python](https://img.shields.io/badge/python-3.10+-blue?style=for-the-badge)
-![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)
-
-![Status](https://img.shields.io/badge/status-under%20construction-orange?style=for-the-badge)
+![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat)
+![License](https://img.shields.io/badge/license-Apache%202.0-green?style=flat)
+![Status](https://img.shields.io/badge/status-under--construction-orange?style=flat)
 
 </p>
 
