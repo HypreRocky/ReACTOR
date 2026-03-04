@@ -69,7 +69,7 @@ from Service import AgentReACTORPlanner
 
 planner = AgentReACTORPlanner()
 planner.set_evaluator(False)
-
+```
 When disabled, execution proceeds directly to the final output after the Worker finishes, skipping Evaluator and Replanner.
 
 ## Future Improvements
