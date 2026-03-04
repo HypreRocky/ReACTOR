@@ -4,7 +4,10 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square">
   <img src="https://img.shields.io/badge/status-under--construction-orange?style=flat-square">
 </p>  
-
+<p align="center">
+  <a href="README.md">中文</a> | 
+  <a href="README_en.md">English</a>
+</p>
 一个基于 `Planner -> Worker -> Evaluator -> Replanner` 图执行的多智能体编排框架。  
 特点是：复杂 query 可拆分、支持串并联 agent 调用、支持 SOP 注册与命中、支持多轮状态回传与续跑。
 
