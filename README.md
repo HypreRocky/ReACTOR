@@ -1,4 +1,29 @@
 <h1 align="center">ReACTOR v5</h1>
+<h1 align="center">ReACTOR</h1>
+
+<p align="center">
+Graph-based Multi-Agent Orchestration Framework
+</p>
+
+<p align="center">
+Planner → Worker → Evaluator → Replanner
+</p>
+
+<p align="center">
+  <a href="https://github.com/YOURNAME/reactor">
+    <img src="https://img.shields.io/github/stars/YOURNAME/reactor?style=flat-square">
+  </a>
+  <a href="https://github.com/YOURNAME/reactor/issues">
+    <img src="https://img.shields.io/github/issues/YOURNAME/reactor?style=flat-square">
+  </a>
+  <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square">
+  <img src="https://img.shields.io/badge/status-under%20construction-orange?style=flat-square">
+</p>
+
+<p align="center">
+A planner-driven multi-agent execution framework designed for complex task orchestration.
+</p>
 <p align="center">
     
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat)
