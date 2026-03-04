@@ -12,11 +12,12 @@
 
 - 复杂问题拆分：Planner 支持 `SplitQuery`，把复合任务拆成多个子任务。
 - 串行/并行执行：Worker 支持 `SerialCallAgent` 与 `ParallelCallAgent`。
-- 上下文衔接：支持 `AppendHistory`，将某一步结果写回 `working_input.history` 给后续步骤使用。
+- 上下文衔接：支持 `AppendHistory`，将某一步结果写回 `history` 给后续步骤使用。
 - SOP 优先规划：可从外部配置注册 SOP，命中后按 SOP 产出计划，不走通用 Planner 逻辑。
 - 自动质量把关：Evaluator 通过模型二次评估结果是否解决用户问题，失败则 Replan。
-- 状态回传：接口返回 `sop_runtime / slots / pending_question / plan_string`，支持多轮续跑。
+- 状态回传：接口返回执行状态，支持多轮续跑。
 - 完整图执行：Service 仅调用 compiled graph，不再手动逐节点编排。
+- 思维链：Trace支持透出可向外展示的思考过程，过程由Planner同步生成，Worker执行时触发，无需重新写入。
 - 异步化：图节点以 async 方式注册，支持并行 worker 调用场景。
 
 ## 节点功能
@@ -121,3 +122,4 @@ Solver 按 `src/output_config.py` 组装最终输出，支持 section：
 - solver支持更定制化答案编排、包括a2ui等
 - 支持skills注册及调用，与agent并行
 - self-refine
+- 优化耗时和开关
