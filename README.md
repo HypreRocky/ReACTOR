@@ -1,10 +1,8 @@
 <h1 align="center">ReACTOR v5</h1>
 <p align="center">
-
 ![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green?style=flat)
 ![Status](https://img.shields.io/badge/status-under--construction-orange?style=flat)
-
 </p>
 
 一个基于 `Planner -> Worker -> Evaluator -> Replanner` 图执行的多智能体编排框架。  
