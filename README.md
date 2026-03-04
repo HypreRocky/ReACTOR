@@ -109,18 +109,6 @@ Solver 按 `src/output_config.py` 组装最终输出，支持 section：
 - 节点日志：`log/reactor_YYYYMMDD.log`（JSONL）
 - 本地调试打印包含：节点耗时、路由流转、worker step 输入输出、trace 最新更新。
 
-## 关键文件
-
-- `graph.py`：图构建与路由
-- `Service.py`：服务入口（调用 compiled graph）
-- `node/planner.py`
-- `node/worker.py`
-- `node/evaluator.py`
-- `node/replanner.py`
-- `node/solver.py`
-- `utils/sop_registry.py` / `utils/sop_engine.py`
-- `conf/config.py` / `conf/sop_config.py`
-
 ## 后续优化方向
 
 - solver支持更定制化答案编排、包括a2ui等
